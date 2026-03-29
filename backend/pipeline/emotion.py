@@ -1,10 +1,10 @@
 from collections import Counter
 
-from data.youtube.api import API
-from data.preprocess.pipeline import batch_preprocess_comments
-from pipeline.schema import EmotionResult, EmotionStats
-from model.emotion.zh import analyze_emotion_zh
-from model.emotion.en import analyze_emotion_en
+from backend.data.youtube.api import API
+from backend.data.preprocess.pipeline import batch_preprocess_comments
+from backend.pipeline.schema import EmotionResult, EmotionStats
+from backend.model.emotion.zh import analyze_emotion_zh
+from backend.model.emotion.en import analyze_emotion_en
 
 EMOTION_CLASSES = [
     "Joy",

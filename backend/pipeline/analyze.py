@@ -1,7 +1,7 @@
-from data.youtube.api import API
-from data.preprocess.pipeline import batch_preprocess_comments
-from pipeline.schema import AnalysisResult, Stats, LangRatio
-from scripts.timestamp import Timer
+from backend.data.youtube.api import API
+from backend.data.preprocess.pipeline import batch_preprocess_comments
+from backend.pipeline.schema import AnalysisResult, Stats, LangRatio
+from backend.scripts.timestamp import Timer
 
 def analyze(video_url: str, *, pages: int = 5, page_size: int = 100, min_likes: int = 0,
             summary_topk: int = 5, keyword_topk: int = 10, run_summary: bool = True, run_keywords: bool = True) -> AnalysisResult:

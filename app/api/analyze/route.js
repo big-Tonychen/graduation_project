@@ -1,21 +1,16 @@
-import { NextResponse } from "next/server";
+export async function GET(req) {
+  const { searchParams } = new URL(req.url);
+  const text = searchParams.get("text");
 
-export async function POST(req) {
-  const { type, data } = await req.json();
+  try {
+    const res = await fetch(
+      `http://localhost:8000/analyze?text=${encodeURIComponent(text)}`
+    );
 
-  let result;
+    const data = await res.json();
 
-  if (type === "keywords") {
-    result = "關鍵字結果";
-  } else if (type === "summary") {
-    result = "摘要結果";
-  } else if (type === "emotion") {
-    result = "情緒分析結果";
-  } else if (type === "topics") {
-    result = "主題分析結果";
-  } else if (type === "top_comment") {
-    result = "最熱門留言";
+    return Response.json(data);
+  } catch (error) {
+    return Response.json({ error: "分析失敗" }, { status: 500 });
   }
-
-  return Response.json({ result });
 }
