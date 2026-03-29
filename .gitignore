@@ -51,25 +51,3 @@ MiniLM*.csv
 BERTSUM*/
 BERTSUM*.csv
 *.zip
-
-# AI 模型
-app/model/
-*.bin
-*.json
-*.pt
-*.h5
-*.ckpt
-
-# 資料集
-data/
-datasets/
-*.csv
-*.tsv
-*.zip
-*.tar.gz
-
-# IDE & OS
-.vscode/
-*.code-workspace
-Thumbs.db
-ehthumbs.db
