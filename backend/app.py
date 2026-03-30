@@ -8,6 +8,7 @@ from backend.pipeline.emotion import build_emotion
 from backend.chart import build_emotion_radar_chart  # 後端雷達圖工具
 import io
 from fastapi.responses import StreamingResponse
+from backend.pipeline.topic import build_topics
 
 # ----------------------
 # FastAPI App 初始化
@@ -53,3 +54,15 @@ def emotion_image(data: dict = Body(...)):
 
     buf = build_emotion_radar_chart(result.stats.emotions)
     return StreamingResponse(buf, media_type="image/png")
+
+@app.get("/")
+def root():
+    return {"message": "Topic API running"}
+
+@app.post("/topics") 
+def topics_text(data: dict = Body(...)): 
+    text = data.get("text") 
+    if not text: 
+        return {"error": "缺少 text"} 
+    result = build_topics(text) 
+    return result
