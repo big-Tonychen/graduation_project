@@ -16,4 +16,8 @@ create index if not exists analysis_records_analysis_date_idx
 create index if not exists analysis_records_category_idx
   on public.analysis_records (category);
 
+-- 添加複合索引來優化去重查詢
+create index if not exists analysis_records_url_category_idx
+  on public.analysis_records (youtube_url, category);
+
 -- 若啟用 RLS，請自行新增適合的 policy（例如允許 anon insert/select），否則後端與 API 寫入會被拒絕。

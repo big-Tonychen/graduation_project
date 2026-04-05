@@ -49,7 +49,19 @@ export async function GET(req) {
     const { data, error } = await query;
     if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
 
-    return new Response(JSON.stringify({ records: data }), {
+    // 前端去重：基於 youtube_url + category 的組合，只保留最新的記錄
+    const uniqueRecords = [];
+    const seen = new Set();
+    
+    for (const record of data) {
+      const key = `${record.youtube_url}|${record.category}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueRecords.push(record);
+      }
+    }
+
+    return new Response(JSON.stringify({ records: uniqueRecords }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });

@@ -66,18 +66,27 @@ supabase = (
 
 
 def save_analysis_record(category: str, youtube_url: str, title: str, payload: dict) -> None:
-    """寫入 Supabase；失敗時只記錄 log，不影響 API 回應。"""
+    """寫入 Supabase；失敗時只記錄 log，不影響 API 回應。避免重複記錄。"""
     if not supabase:
         return
     try:
+        # 檢查是否已存在相同的記錄
+        existing = supabase.table("analysis_records").select("id").eq("youtube_url", youtube_url).eq("category", category).execute()
+        
         row = {
             "category": category,
             "youtube_url": youtube_url,
             "title": title or None,
             "payload": payload,
-            "analysis_date": datetime.utcnow().isoformat(),  # 添加時間戳
+            "analysis_date": datetime.utcnow().isoformat(),  # 更新時間戳
         }
-        supabase.table("analysis_records").insert(row).execute()
+        
+        if existing.data and len(existing.data) > 0:
+            # 更新現有記錄
+            supabase.table("analysis_records").update(row).eq("id", existing.data[0]["id"]).execute()
+        else:
+            # 新增記錄
+            supabase.table("analysis_records").insert(row).execute()
     except Exception as e:
         print("save_analysis_record failed:", e)
 
