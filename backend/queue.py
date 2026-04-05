@@ -1,0 +1,314 @@
+from __future__ import annotations
+
+import asyncio
+import uuid
+from dataclasses import dataclass, asdict, is_dataclass
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, Optional, Tuple
+
+from backend.pipeline.schema import Job
+from backend.pipeline.top_comments import get_top_comments
+from backend.pipeline.topic import build_topics
+from backend.pipeline.emotion import build_emotion
+
+
+@dataclass(slots=True)
+class JobStatus:
+    status: str  # queued | running | completed | failed
+    video_id: str
+    mode: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+    from_cache: Optional[bool] = None
+    error: Optional[str] = None
+    # 可選：不要讓 web adapter 依賴 queue 內部型別就能序列化結果
+    result: Any = None
+
+
+def _to_jsonable(obj: Any) -> Any:
+    # 讓 FastAPI 之類的 JSON response 可以直接用
+    if is_dataclass(obj):
+        return {k: _to_jsonable(v) for k, v in asdict(obj).items()}
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_jsonable(x) for x in obj]
+    if isinstance(obj, tuple):
+        return [_to_jsonable(x) for x in obj]
+    return obj
+
+
+class AnalysisQueue:
+    """
+    - asyncio.Queue 當任務隊列
+    - 固定 N 個 worker 消費任務（控制併發）
+    - 同影片去重：同一 video_id 只跑一次
+    - TTL cache：短時間重複請求直接回結果
+    """
+
+    def __init__(
+        self,
+        *,
+        analyze_fn: Callable[[str], object],                 # analyze(url, ...) -> pipeline result
+        extract_video_id_fn: Callable[[str], Optional[str]],  # extract_video_id(url) -> video_id
+        workers: int = 2,
+        cache_ttl_minutes: int = 10,
+        max_queue_size: int = 50,
+        job_ttl_minutes: int = 60,
+    ):
+        self.analyze_fn = analyze_fn
+        self.extract_video_id_fn = extract_video_id_fn
+
+        self.queue: asyncio.Queue[Job] = asyncio.Queue(maxsize=max_queue_size)
+        self.workers = workers
+        self.cache_ttl = timedelta(minutes=cache_ttl_minutes)
+        self.job_ttl = timedelta(minutes=job_ttl_minutes)
+
+        self._worker_tasks: list[asyncio.Task] = []
+        self._stop_event = asyncio.Event()
+
+        # video_id -> (result, expires_at)
+        self._cache: Dict[str, Tuple[object, datetime]] = {}
+
+        # video_id -> asyncio.Lock (同影片只跑一次)
+        self._locks: Dict[str, asyncio.Lock] = {}
+
+        # job_id -> JobStatus / Future / running event
+        self._job_status: Dict[str, JobStatus] = {}
+        self._job_futures: Dict[str, asyncio.Future] = {}
+        self._running_events: Dict[str, asyncio.Event] = {}
+        
+    def _key(self, video_id: str, mode: str) -> str:
+        return f"{video_id}:{mode}"
+
+
+    def _get_lock(self, key: str) -> asyncio.Lock:
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    def _get_cached(self, key: str) -> Optional[object]:
+        item = self._cache.get(key)
+        if not item:
+            return None
+        result, exp = item
+        if datetime.utcnow() > exp:
+            self._cache.pop(key, None)
+            return None
+        return result
+
+    def _set_cache(self, key: str, result: object) -> None:
+        self._cache[key] = (result, datetime.utcnow() + self.cache_ttl)
+
+    async def start(self) -> None:
+        if self._worker_tasks:
+            return
+        self._stop_event.clear()
+        for i in range(self.workers):
+            self._worker_tasks.append(asyncio.create_task(self._worker_loop(i)))
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        # 送停止訊號：放入 None 類似的方式也可，這裡用 cancel
+        for t in self._worker_tasks:
+            t.cancel()
+        await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+        self._worker_tasks.clear()
+
+    def queue_size(self) -> int:
+        return self.queue.qsize()
+
+    async def submit(self, url: str, mode: str = "full", analyze_kwargs: Optional[Dict[str, Any]] = None) -> str:
+        """
+        新增一個分析工作並回傳 job_id（web/discord 都用同一套）。
+        """
+        video_id = self.extract_video_id_fn(url) or "unknown"
+        job_id = uuid.uuid4().hex
+        created_at = datetime.utcnow()
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        running_event = asyncio.Event()
+
+        self._job_futures[job_id] = future
+        self._running_events[job_id] = running_event
+        expires_at = created_at + self.job_ttl
+        self._job_status[job_id] = JobStatus(
+            status="queued",
+            video_id=video_id,
+            mode=mode,
+            created_at=created_at,
+            updated_at=created_at,
+            expires_at=expires_at,
+            from_cache=None,
+            error=None,
+            result=None,
+        )
+
+        job = Job(job_id=job_id, video_id=video_id, url=url, message=None, created_at=created_at, mode=mode, analyze_kwargs=analyze_kwargs)
+        await self.queue.put(job)
+        return job_id
+
+    async def wait_until_running(self, job_id: str, *, timeout: Optional[float] = None) -> bool:
+        event = self._running_events.get(job_id)
+        if event is None:
+            return False
+        try:
+            if timeout is None:
+                await event.wait()
+            else:
+                await asyncio.wait_for(event.wait(), timeout=timeout)
+            return event.is_set()
+        except asyncio.TimeoutError:
+            return False
+
+    async def wait_for_result(self, job_id: str, *, timeout: Optional[float] = None) -> Any:
+        future = self._job_futures.get(job_id)
+        if future is None:
+            raise KeyError(f"job_id not found: {job_id}")
+        if timeout is None:
+            return await future
+        return await asyncio.wait_for(future, timeout=timeout)
+
+    def get_status(self, job_id: str) -> Optional[dict]:
+        st = self._job_status.get(job_id)
+        if st is None:
+            return None
+        if datetime.utcnow() > st.expires_at:
+            self._job_status.pop(job_id, None)
+            self._job_futures.pop(job_id, None)
+            self._running_events.pop(job_id, None)
+            return None
+        return {
+            "job_id": job_id,
+            "status": st.status,
+            "video_id": st.video_id,
+            "mode": st.mode,
+            "from_cache": st.from_cache,
+            "error": st.error,
+            "created_at": st.created_at.isoformat(),
+            "updated_at": st.updated_at.isoformat(),
+        }
+
+    def get_result_payload(self, job_id: str) -> Optional[dict]:
+        st = self._job_status.get(job_id)
+        if st is None or st.status not in ("completed", "failed"):
+            return None
+        if datetime.utcnow() > st.expires_at:
+            self._job_status.pop(job_id, None)
+            self._job_futures.pop(job_id, None)
+            self._running_events.pop(job_id, None)
+            return None
+        if st.status == "failed" or st.result is None:
+            return None
+        return _to_jsonable(st.result)
+
+    async def _worker_loop(self, worker_id: int) -> None:
+        loop = asyncio.get_running_loop()
+
+        while not self._stop_event.is_set():
+            job = await self.queue.get()
+            try:
+                # 1) cache 命中就直接回
+                cached_key = self._key(job.video_id, job.mode)
+                cached = self._get_cached(cached_key)
+                if cached is not None:
+                    st = self._job_status.get(job.job_id)
+                    if st:
+                        st.status = "completed"
+                        st.updated_at = datetime.utcnow()
+                        st.from_cache = True
+                        st.error = None
+                        st.result = cached
+                    future = self._job_futures.get(job.job_id)
+                    if future and not future.done():
+                        future.set_result(cached)
+                    continue
+
+                # 2) 同影片去重：同一 video_id 同時只允許一個 worker 做
+                lock = self._get_lock(cached_key)
+                async with lock:
+                    # double-check cache（可能另一個 worker 已算完）
+                    cached2 = self._get_cached(cached_key)
+                    if cached2 is not None:
+                        st = self._job_status.get(job.job_id)
+                        if st:
+                            st.status = "completed"
+                            st.updated_at = datetime.utcnow()
+                            st.from_cache = True
+                            st.error = None
+                            st.result = cached2
+                        future = self._job_futures.get(job.job_id)
+                        if future and not future.done():
+                            future.set_result(cached2)
+                        continue
+
+                    # 3) 真的跑 analyze（CPU/IO heavy），丟 executor
+                    st = self._job_status.get(job.job_id)
+                    if st:
+                        st.status = "running"
+                        st.updated_at = datetime.utcnow()
+                        st.from_cache = False
+                        st.error = None
+                        st.result = None
+                    running_event = self._running_events.get(job.job_id)
+                    if running_event:
+                        running_event.set()
+
+                    def _run():
+                        if job.mode == "summary":
+                            kwargs = job.analyze_kwargs or {}
+                            return self.analyze_fn(job.url, run_summary=True, run_keywords=False, **kwargs)
+                        elif job.mode == "keywords":
+                            kwargs = job.analyze_kwargs or {}
+                            return self.analyze_fn(job.url, run_summary=False, run_keywords=True, **kwargs)
+                        elif job.mode == "top_comments":
+                            return get_top_comments(
+                                job.url,
+                                n=10,
+                                order="relevance",
+                                sort_by="likes",
+                                pages=5,
+                                page_size=100,
+                                min_likes=1,
+                            )
+                        elif job.mode == "topics":
+                            return build_topics(job.url)
+                        elif job.mode == "emotion":
+                            return build_emotion(job.url)
+                        
+                        # full mode - 使用 analyze_kwargs 中的參數，不要重複設定
+                        kwargs = job.analyze_kwargs or {}
+                        return self.analyze_fn(job.url, **kwargs)
+
+                    result = await loop.run_in_executor(None, _run)
+
+                    # 4) 存快取 + 回傳
+                    self._set_cache(cached_key, result)
+                    st = self._job_status.get(job.job_id)
+                    if st:
+                        st.status = "completed"
+                        st.updated_at = datetime.utcnow()
+                        st.from_cache = False
+                        st.error = None
+                        st.result = result
+                    future = self._job_futures.get(job.job_id)
+                    if future and not future.done():
+                        future.set_result(result)
+
+            except Exception as e:
+                st = self._job_status.get(job.job_id)
+                if st:
+                    st.status = "failed"
+                    st.updated_at = datetime.utcnow()
+                    st.from_cache = False
+                    st.error = f"{type(e).__name__}: {e}"
+                    st.result = None
+                future = self._job_futures.get(job.job_id)
+                if future and not future.done():
+                    future.set_exception(e)
+            finally:
+                self.queue.task_done()

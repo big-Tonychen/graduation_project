@@ -4,7 +4,8 @@ Integrate I/O
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import List, Optional, Literal
+from datetime import datetime
+from typing import Any, List, Optional, Literal, Dict
 
 # Analysis
 
@@ -45,11 +46,13 @@ class AnalysisResult:
     
 @dataclass
 class Job:
+    job_id: str
     video_id: str
     url: str
-    message: discord.Message
+    message: Any  # discord.Message（Discord bot）；網頁示範可不使用
     created_at: datetime
     mode: str = "full"
+    analyze_kwargs: Optional[Dict[str, Any]] = None
 
 # Top Comments
 

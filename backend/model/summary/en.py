@@ -6,7 +6,7 @@ from transformers import BertTokenizer
 import torch.amp as amp
 from typing import List
 
-from model.embedding.loader import get_en_summary_model
+from backend.model.embedding.loader import get_en_summary_model
 
 def _batch_probs(
     sentences: List[str],

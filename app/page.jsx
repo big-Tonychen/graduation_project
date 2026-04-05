@@ -1,27 +1,13 @@
 "use client";
+
 import { useState } from "react";
+import Link from "next/link";
+import { API_BASE } from "@/lib/apiBase";
+import { AnalysisResultView, TopicsResultView } from "@/lib/recordResultViews";
 
-// ----------------------
-// Helper functions
-// ----------------------
-const clip = (text, limit = 1024) => {
-  if (!text) return "";
-  return text.length > limit ? text.slice(0, limit - 3) + "…" : text;
-};
+/** 僅顯示其中一種結果：分析 / 主題 / 情緒圖 */
+const PANEL = { analysis: "analysis", topics: "topics", emotion: "emotion" };
 
-const fmtList = (lines, maxLines = 6) => {
-  if (!lines || !lines.length) return "（無）";
-  return lines.slice(0, maxLines).map((l, i) => `${i + 1}. ${l}`).join("\n");
-};
-
-const fmtKeywords = (words, maxItems = 12) => {
-  if (!words || !words.length) return "（無）";
-  return words.slice(0, maxItems).map(w => `\`${w}\``).join(" ");
-};
-
-// ----------------------
-// Main Page
-// ----------------------
 export default function Page() {
   const [text, setText] = useState("");
   const [emotionImage, setEmotionImage] = useState(null);
@@ -29,20 +15,34 @@ export default function Page() {
 
   const [analysisResult, setAnalysisResult] = useState(null);
   const [topicsResult, setTopicsResult] = useState(null);
+  /** 目前要顯示哪一區（一次只顯示一個） */
+  const [visiblePanel, setVisiblePanel] = useState(null);
 
-  // ----------------------
-  // Handlers
-  // ----------------------
+  const clearEmotionBlob = () => {
+    setEmotionImage((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  };
+
   const handleAnalyze = async () => {
     if (!text) return;
     setLoading(true);
-    setEmotionImage(null);
+    setVisiblePanel(PANEL.analysis);
+    setTopicsResult(null);
+    clearEmotionBlob();
+
+    const body = JSON.stringify({ video_url: text });
 
     try {
-      const res = await fetch(`/api/analyze?text=${encodeURIComponent(text)}`);
+      const res = await fetch(`${API_BASE}/analyze/queued`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
       const data = await res.json();
       setAnalysisResult(data.error ? { error: "分析失敗" } : data.result);
-    } catch (err) {
+    } catch {
       setAnalysisResult({ error: "分析失敗" });
     }
 
@@ -52,10 +52,13 @@ export default function Page() {
   const handleFetchEmotion = async () => {
     if (!text) return;
     setLoading(true);
-    setEmotionImage(null);
+    setVisiblePanel(PANEL.emotion);
+    setAnalysisResult(null);
+    setTopicsResult(null);
+    clearEmotionBlob();
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/emotion_image", {
+      const res = await fetch(`${API_BASE}/emotion_image`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: text }),
@@ -66,6 +69,7 @@ export default function Page() {
       setEmotionImage(URL.createObjectURL(blob));
     } catch (err) {
       alert(err.message);
+      setVisiblePanel(null);
     }
 
     setLoading(false);
@@ -74,139 +78,113 @@ export default function Page() {
   const handleTopics = async () => {
     if (!text) return;
     setLoading(true);
+    setVisiblePanel(PANEL.topics);
+    setAnalysisResult(null);
+    clearEmotionBlob();
     setTopicsResult(null);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/topics", {
+      const res = await fetch(`${API_BASE}/topics`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text })
+        body: JSON.stringify({ text }),
       });
       const data = await res.json();
       setTopicsResult(data.error ? { error: data.error } : data);
-    } catch (err) {
+    } catch {
       setTopicsResult({ error: "取得主題分析失敗" });
     }
 
     setLoading(false);
   };
-  // ----------------------
-  // Render
-  // ----------------------
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-800 to-blue-900 p-6 text-white">
-      <h1 className="text-3xl font-bold mb-6 text-center">🤖 AI Comment Analyzer</h1>
+    <div className="min-h-screen bg-gradient-to-br from-indigo-950 via-purple-900 to-blue-950 px-4 py-8 text-white sm:px-6">
+      <div className="mx-auto max-w-5xl space-y-8">
+        <header className="space-y-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-medium uppercase tracking-wider text-indigo-200/90">
+                Graduation project
+              </p>
+              <h1 className="mt-1 text-3xl font-bold tracking-tight sm:text-4xl">
+                AI Comment Analyzer
+              </h1>
+              <p className="mt-2 max-w-xl text-sm text-white/70">
+                留言摘要、關鍵字、主題與情緒視覺化。
+              </p>
+            </div>
+            <Link
+              href="/Historical_records"
+              className="inline-flex shrink-0 items-center justify-center rounded-xl bg-white/10 px-5 py-2.5 text-sm font-medium ring-1 ring-white/20 transition hover:bg-white/20"
+            >
+              歷史紀錄
+            </Link>
+          </div>
+        </header>
 
-      {/* 輸入與按鈕 */}
-      <div className="flex mb-4 gap-2">
-        <input
-          type="text"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          className="flex-1 p-3 rounded-l-lg text-white bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="貼上 YouTube URL"
-        />
-        <button onClick={handleAnalyze} className="bg-blue-500 text-white px-4 py-2 rounded-r-lg">
-          分析
-        </button>
-        <button onClick={handleFetchEmotion} className="bg-blue-500 text-white px-4 py-2 rounded-r-lg">
-          情緒分析
-        </button>
-        <button onClick={handleTopics} className="bg-blue-500 text-white px-4 py-2">
-          主題分析
-        </button>
+        <main className="space-y-6">
+          <div className="rounded-2xl border border-white/15 bg-white/[0.06] p-5 backdrop-blur-md">
+            <label className="block text-sm font-medium text-white/85">YouTube 網址</label>
+            <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-stretch">
+              <input
+                type="url"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                className="min-h-[48px] flex-1 rounded-xl border border-white/20 bg-white/10 px-4 text-white outline-none placeholder:text-white/45 focus:ring-2 focus:ring-indigo-400"
+                placeholder="貼上 YouTube 影片連結"
+              />
+              <div className="flex flex-wrap gap-2 lg:shrink-0">
+                <button
+                  type="button"
+                  onClick={handleAnalyze}
+                  disabled={loading}
+                  className="min-h-[48px] rounded-xl bg-indigo-500 px-5 font-medium transition hover:bg-indigo-400 disabled:opacity-50"
+                >
+                  {loading ? "處理中…" : "分析"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleFetchEmotion}
+                  disabled={loading}
+                  className="min-h-[48px] rounded-xl bg-violet-600 px-5 font-medium transition hover:bg-violet-500 disabled:opacity-50"
+                >
+                  情緒圖
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTopics}
+                  disabled={loading}
+                  className="min-h-[48px] rounded-xl bg-sky-600 px-5 font-medium transition hover:bg-sky-500 disabled:opacity-50"
+                >
+                  主題分析
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {visiblePanel === PANEL.analysis && analysisResult && (
+            <AnalysisResultView result={analysisResult} />
+          )}
+
+          {visiblePanel === PANEL.topics && topicsResult && (
+            <TopicsResultView result={topicsResult} />
+          )}
+
+          {visiblePanel === PANEL.emotion && emotionImage && (
+            <figure className="overflow-hidden rounded-2xl border border-white/15 bg-black/30 p-4">
+              <img
+                src={emotionImage}
+                alt="情緒雷達圖"
+                className="mx-auto max-h-[480px] w-auto max-w-full object-contain"
+              />
+              <figcaption className="mt-2 text-center text-xs text-white/50">
+                情緒分析雷達圖
+              </figcaption>
+            </figure>
+          )}
+        </main>
       </div>
-
-      {/* 分析結果 */}
-      {analysisResult && !analysisResult.error && (
-      <div className="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
-        {/* 標題與影片ID */}
-        <h2 className="text-xl font-bold">{clip(analysisResult.title || analysisResult.video_id, 256)}</h2>
-        <p><strong>影片ID:</strong> {analysisResult.video_id || "N/A"}</p>
-
-        {/* 中文摘要 */}
-        {analysisResult.summary_zh?.length > 0 && (
-          <div>
-            <h3 className="font-semibold">📌 中文摘要</h3>
-            <p style={{ whiteSpace: "pre-line" }}>{fmtList(analysisResult.summary_zh)}</p>
-          </div>
-        )}
-
-        {/* 英文摘要 */}
-        {analysisResult.summary_en?.length > 0 && (
-          <div>
-            <h3 className="font-semibold">📌 English Summary</h3>
-            <p style={{ whiteSpace: "pre-line" }}>{fmtList(analysisResult.summary_en)}</p>
-          </div>
-        )}
-
-        {/* 中文關鍵字 */}
-        {analysisResult.keywords_zh?.length > 0 && (
-          <div>
-            <h3 className="font-semibold">🔑 中文關鍵字</h3>
-            <p>{fmtKeywords(analysisResult.keywords_zh)}</p>
-          </div>
-        )}
-
-        {/* 英文關鍵字 */}
-        {analysisResult.keywords_en?.length > 0 && (
-          <div>
-            <h3 className="font-semibold">🔑 English Keywords</h3>
-            <p>{fmtKeywords(analysisResult.keywords_en)}</p>
-          </div>
-        )}
-
-        {/* 語言比例 */}
-        {analysisResult.lang_ratio && (
-          <div>
-            <h3 className="font-semibold">🌍 語言佔比</h3>
-            <p>
-              🇹🇼 中文：{((analysisResult.lang_ratio.zh ?? 0) * 100).toFixed(1)}% <br/>
-              🇺🇸 英文：{((analysisResult.lang_ratio.en ?? 0) * 100).toFixed(1)}% <br/>
-              🌐 其他：{((analysisResult.lang_ratio.other ?? 0) * 100).toFixed(1)}%
-            </p>
-          </div>
-        )}
-
-        {/* Footer：總留言數 */}
-        <footer className="text-sm text-gray-400">
-          總留言數：{analysisResult.stats?.n_comments ?? 0}
-        </footer>
-      </div>
-    )}
-
-      {topicsResult && !topicsResult.error && (
-  <div className="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
-    <h2 className="text-xl font-bold">🧾 影片標題：{topicsResult.title}</h2>
-    <p>🌐 主要語言：{topicsResult.language}</p>
-
-    {topicsResult.topics?.length > 0 && topicsResult.topics.map((topic, idx) => {
-      const total = topicsResult.topics.reduce((sum, t) => sum + (t.size || 0), 0) || 1;
-      return (
-        <div key={idx}>
-          <strong>
-            Topic {idx + 1}（{topic.size || 0} 則，佔 {((topic.size || 0) / total * 100).toFixed(1)}%）
-          </strong>
-          <p>關鍵詞：{fmtKeywords(topic.keywords)}</p>
-          <p style={{ whiteSpace: "pre-line" }}>
-            代表留言：<br/>{topic.representative_comments?.join("\n") || "無"}
-          </p>
-        </div>
-      )
-    })}
-
-    <p className="mt-4">
-      總留言數：{topicsResult.total_comments}
-    </p>
-  </div>
-)}
-
-      {/* 情緒圖 */}
-      {emotionImage && (
-        <div>
-          <img src={emotionImage} alt="Emotion Radar" />
-        </div>
-      )}
     </div>
   );
 }
