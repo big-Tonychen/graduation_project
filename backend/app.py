@@ -16,8 +16,10 @@ from pydantic import BaseModel
 
 from backend.pipeline.analyze import analyze
 from backend.pipeline.emotion import build_emotion
-from backend.chart import build_emotion_radar_chart
 from backend.pipeline.topic import build_topics
+from backend.pipeline.trend import build_trend_analysis, build_emotion_topics
+from backend.chart import build_emotion_radar_chart
+from backend.chart_trend import build_trend_chart, build_emotion_topic_chart, build_combined_trend_chart
 from backend.model.summary.zh import summarize_zh
 from backend.model.summary.en import summarize_en
 from backend.data.youtube.api import API
@@ -218,3 +220,130 @@ def topics_text(data: dict = Body(...)):
             encoded,
         )
     return encoded
+
+# ----------------------
+# POST: 趨勢分析
+# ----------------------
+@app.post("/trend_analysis")
+def trend_analysis(data: dict = Body(...)):
+    url = data.get("url")
+    time_unit = data.get("time_unit", "hour")
+    if not url:
+        return {"error": "缺少 URL"}
+    
+    result = build_trend_analysis(url, time_unit)
+    encoded = jsonable_encoder(result)
+    
+    # 不保存記錄，因為這個端點主要是為了獲取負面情緒高峰分析數據
+    # 趨勢分析圖表會通過 /trend_chart 端點保存到 "情緒分析" 記錄中
+    return encoded
+
+@app.post("/trend_chart")
+def trend_chart(data: dict = Body(...)):
+    url = data.get("url")
+    chart_type = data.get("chart_type", "volume")  # volume 或 sentiment
+    time_unit = data.get("time_unit", "hour")
+    if not url:
+        return {"error": "缺少 URL"}
+    
+    try:
+        trend_result = build_trend_analysis(url, time_unit)
+        if trend_result.error:
+            return {"error": trend_result.error}
+        
+        buf = build_trend_chart(trend_result, chart_type)
+        png_bytes = buf.getvalue()
+        
+        # 將圖表存入 payload
+        encoded = jsonable_encoder(trend_result)
+        encoded[f"{chart_type}_chart_png_base64"] = base64.standard_b64encode(png_bytes).decode("ascii")
+        save_analysis_record(
+            "情緒分析",  # 統一使用 "情緒分析" 而不是 "趨勢圖表_sentiment"
+            url,
+            trend_result.title or "",
+            encoded,
+        )
+        
+        return StreamingResponse(BytesIO(png_bytes), media_type="image/png")
+    except Exception as e:
+        return {"error": f"圖表生成失敗: {str(e)}"}
+
+@app.post("/emotion_topics")
+def emotion_topics(data: dict = Body(...)):
+    url = data.get("url")
+    if not url:
+        return {"error": "缺少 URL"}
+    
+    result = build_emotion_topics(url)
+    encoded = jsonable_encoder(result)
+    
+    if not result.error:
+        save_analysis_record(
+            "情緒分析",  # 統一使用 "情緒分析" 而不是 "情緒話題"
+            url,
+            result.title or "",
+            encoded
+        )
+    return encoded
+
+@app.post("/emotion_topic_chart")
+def emotion_topic_chart(data: dict = Body(...)):
+    url = data.get("url")
+    if not url:
+        return {"error": "缺少 URL"}
+    
+    try:
+        emotion_topic_result = build_emotion_topics(url)
+        if emotion_topic_result.error:
+            return {"error": emotion_topic_result.error}
+        
+        buf = build_emotion_topic_chart(emotion_topic_result)
+        png_bytes = buf.getvalue()
+        
+        # 將圖表存入 payload
+        encoded = jsonable_encoder(emotion_topic_result)
+        encoded["emotion_topic_chart_png_base64"] = base64.standard_b64encode(png_bytes).decode("ascii")
+        save_analysis_record(
+            "情緒話題圖表",
+            url,
+            emotion_topic_result.title or "",
+            encoded,
+        )
+        
+        return StreamingResponse(BytesIO(png_bytes), media_type="image/png")
+    except Exception as e:
+        return {"error": f"情緒話題圖表生成失敗: {str(e)}"}
+
+@app.post("/combined_trend_chart")
+def combined_trend_chart(data: dict = Body(...)):
+    url = data.get("url")
+    time_unit = data.get("time_unit", "hour")
+    if not url:
+        return {"error": "缺少 URL"}
+    
+    try:
+        trend_result = build_trend_analysis(url, time_unit)
+        emotion_topic_result = build_emotion_topics(url)
+        
+        if trend_result.error and emotion_topic_result.error:
+            return {"error": "無法獲取分析資料"}
+        
+        buf = build_combined_trend_chart(trend_result, emotion_topic_result)
+        png_bytes = buf.getvalue()
+        
+        # 將圖表存入 payload
+        combined_data = {
+            "trend_result": jsonable_encoder(trend_result),
+            "emotion_topic_result": jsonable_encoder(emotion_topic_result),
+            "combined_chart_png_base64": base64.standard_b64encode(png_bytes).decode("ascii")
+        }
+        save_analysis_record(
+            "情緒分析",  # 統一使用 "情緒分析" 而不是 "綜合趨勢圖表"
+            url,
+            f"{trend_result.title} - 綜合分析",
+            combined_data,
+        )
+        
+        return StreamingResponse(BytesIO(png_bytes), media_type="image/png")
+    except Exception as e:
+        return {"error": f"綜合趨勢圖表生成失敗: {str(e)}"}

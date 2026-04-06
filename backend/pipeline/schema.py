@@ -115,3 +115,63 @@ class EmotionResult:
     language: str = ""
     stats: EmotionStats | None = None
     error: Optional[str] = None
+
+# Trend Analysis
+
+@dataclass(slots=True)
+class TimePoint:
+    timestamp: str  # ISO format datetime
+    comment_count: int = 0
+    emotions: Dict[str, int] = field(default_factory=dict)
+    keywords: List[str] = field(default_factory=list)
+    avg_sentiment: float = 0.0  # -1 to 1 scale
+
+@dataclass(slots=True)
+class NegativePeakAnalysis:
+    """負面情緒高峰詳細分析"""
+    peak_time: str  # 高峰時間點
+    peak_sentiment: float  # 高峰情緒分數
+    peak_comments: List[str]  # 高峰時間的留言
+    peak_keywords: List[str]  # 高峰時間的關鍵字
+    peak_summary: str  # 高峰時間的摘要
+    negative_emotions: Dict[str, int]  # 各種負面情緒的分布
+    total_peak_comments: int  # 高峰時間的留言總數
+
+@dataclass(slots=True)
+class TrendStats:
+    time_points: List[TimePoint] = field(default_factory=list)
+    total_comments: int = 0
+    time_span_hours: int = 0
+    peak_comment_time: Optional[str] = None
+    peak_negative_time: Optional[str] = None
+    anomaly_points: List[str] = field(default_factory=list)  # timestamps of anomalies
+    negative_peak_analysis: Optional[NegativePeakAnalysis] = None  # 負面情緒高峰詳細分析
+
+@dataclass(slots=True)
+class TrendResult:
+    url: str
+    title: str = ""
+    total_comments: int = 0
+    language: str = ""
+    trend_stats: TrendStats | None = None
+    error: Optional[str] = None
+
+@dataclass(slots=True)
+class SentimentTopic:
+    topic: str
+    sentiment: str  # positive/negative/neutral
+    comments: List[str]
+    count: int
+    keywords: List[str] = field(default_factory=list)  # 
+    summary: str = ""  # 
+
+@dataclass(slots=True)
+class EmotionTopicResult:
+    url: str
+    title: str = ""
+    total_comments: int = 0
+    language: str = ""
+    positive_topics: List[SentimentTopic] = field(default_factory=list)
+    negative_topics: List[SentimentTopic] = field(default_factory=list)
+    neutral_topics: List[SentimentTopic] = field(default_factory=list)
+    error: Optional[str] = None

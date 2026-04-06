@@ -1,5 +1,7 @@
 import io
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # 使用非交互式後端，避免 tkinter 錯誤
 import matplotlib.pyplot as plt
 
 EMOTION_ORDER = [
